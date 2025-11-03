@@ -1,0 +1,128 @@
+---
+title: "Gryphons CTF - The Diary (crypto)"
+date: "2025-11-03"
+tags: ["crypto", "ctf", "writeup", "gryphons"]
+summary: "Write-up for the 'the diary' challenge — custom script + rail-fence + modular shifts."
+image: "/blog/the_diary/public.png"
+author: "Erwin Wijaya"
+draft: false
+featured: true
+---
+
+## Pendahuluan
+
+Challenge **The Diary** menyajikan sebuah custom enkripsi yang terdiri dari beberapa langkah: penghilangan spasi, sejumlah *modular shifts* berulang pada huruf, lalu enkripsi Rail-Fence (3 rails), kemudian spacing/formatting. Penyerang diberi ciphertext: `W2CY7 RZ5RA DBE2B RQK6` dan file sumber enkripsi (C++). Tujuan: rekonstuksi plaintext / flag.
+
+Saya melakukan reversing terhadap script enkripsi (file C++ yang diupload) dan membuat proses dekripsi kebalikan dari pipeline di biner untuk mendapatkan pesan asli.
+
+---
+
+## Ringkasan metode dekripsi
+
+1. **Remove spacing** — hapus semua spasi dari ciphertext.  
+2. **Reverse modular shifts** — biner melakukan 5 iterasi transformasi karakter: pada setiap iterasi ditambahkan `modVal + i` ke huruf (dengan `modVal` berubah tiap iterasi). Mod values yang dipakai adalah: `10, 17, 24, 31, 38`. Untuk membaliknya kita iterasi terbalik dan kurangi `(modVal + i)` dari setiap huruf (mod 26). Non-alfabet tidak diubah.  
+3. **Rail-fence decrypt** — akhirnya hasilnya didekripsi dengan Rail-Fence (3 rails) untuk mengembalikan urutan huruf aslinya.  
+4. Hasil akhir adalah string alphanumeric; original script enkripsi **menghapus karakter non-alphanumeric** sehingga kurung kurawal `{}` hilang dari ciphertext—oleh karena itu kita rekonstruksi isi flag tanpa braces dan menambahkan braces di akhir sebagai format flag.
+
+Hasil dekripsi (cleaned): `GCTF25ENCRYPTING726` → jadi flag yang masuk akal: `GCTF25{ENCRYPTING726}`
+
+---
+
+## Detail teknis (penjelasan singkat)
+
+- Ciphertext: `W2CY7 RZ5RA DBE2B RQK6`  
+- Setelah hapus spasi: `W2CY7RZ5RADBE2BRQK6`  
+- Setelah reverse modular transforms: `G2CT7CF5NRPIG2TEYN6`  
+- Setelah rail-fence decrypt (3 rails): `GCTF25ENCRYPTING726`
+
+Catatan: angka tetap dibiarkan (non-alfanumerik selain huruf dan angka juga dihapus oleh enkripsi).
+
+---
+
+## PoC / Solver (Python)
+
+Skrip berikut melakukan seluruh pipeline dekripsi kebalikan dan mencetak hasil final. Simpel, mudah dimodifikasi untuk ciphertext lain yang menggunakan pola transformasi yang sama.
+
+```python
+#!/usr/bin/env python3
+# solver_the_diary.py
+# Decryptor untuk challenge "the diary"
+
+encrypted = "W2CY7 RZ5RA DBE2B RQK6"
+
+def remove_spaces(s):
+    return "".join(s.split())
+
+def reverse_mod_transform(s, mod_values):
+    result = list(s)
+    for iteration in reversed(range(len(mod_values))):
+        modVal = mod_values[iteration]
+        new = []
+        for i, ch in enumerate(result):
+            if ch.isalpha():
+                # reverse the addition: subtract (modVal + i), wrap modulo 26
+                val = (ord(ch) - ord('A') - (modVal + i)) % 26
+                new.append(chr(ord('A') + val))
+            else:
+                new.append(ch)
+        result = new
+    return "".join(result)
+
+def rail_fence_decrypt(cipher, num_rails):
+    n = len(cipher)
+    if num_rails <= 1:
+        return cipher
+    # build the rail pattern
+    rail_idx = [0]*n
+    rail = 0
+    down = True
+    for pos in range(n):
+        rail_idx[pos] = rail
+        if rail == 0:
+            down = True
+        elif rail == num_rails - 1:
+            down = False
+        rail += 1 if down else -1
+    # count characters per rail
+    counts = [rail_idx.count(r) for r in range(num_rails)]
+    rails = []
+    ptr = 0
+    for r in range(num_rails):
+        rails.append(list(cipher[ptr:ptr+counts[r]]))
+        ptr += counts[r]
+    # reconstruct plaintext
+    plaintext_chars = []
+    rail_pos = [0]*num_rails
+    for pos in range(n):
+        r = rail_idx[pos]
+        plaintext_chars.append(rails[r][rail_pos[r]])
+        rail_pos[r] += 1
+    return "".join(plaintext_chars)
+
+if __name__ == '__main__':
+    no_space = remove_spaces(encrypted)
+    mod_values = [10 + i*7 for i in range(5)]  # [10,17,24,31,38]
+    after_reverse = reverse_mod_transform(no_space, mod_values)
+    decrypted_cleaned = rail_fence_decrypt(after_reverse, 3)
+    print("Ciphertext:", encrypted)
+    print("No spaces :", no_space)
+    print("After rev :", after_reverse)
+    print("Plain     :", decrypted_cleaned)
+    # probable flag format (enkripsi menghapus braces)
+    print("FLAG      :", "GCTF25{" + decrypted_cleaned.replace('GCTF25','') + "}")
+```
+
+Jalankan:
+```bash
+python3 solver.py
+```
+
+---
+
+## Flag
+
+```
+GCTF25{ENCRYPTING726}
+```
+
+---

