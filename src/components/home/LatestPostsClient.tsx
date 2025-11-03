@@ -27,18 +27,6 @@ interface LatestPostsClientProps {
   posts: BlogPost[];
 }
 
-const cardVariants = {
-  hidden: { opacity: 0, y: 30 },
-  visible: {
-    opacity: 1,
-    y: 0,
-    transition: {
-      duration: 0.5,
-      ease: [0.16, 1, 0.3, 1] as const,
-    },
-  },
-};
-
 export default function LatestPostsClient({ posts }: LatestPostsClientProps) {
   return (
     <section className="py-20 md:py-32 relative overflow-hidden">
@@ -125,18 +113,18 @@ export default function LatestPostsClient({ posts }: LatestPostsClientProps) {
             Thoughts on cybersecurity, CTF writeups, and technical deep dives
           </p>
 
-          {/* Swipe hint for mobile - Bottom center */}
+          {/* Swipe hint */}
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="flex md:hidden justify-center items-center gap-2 text-sm text-muted-foreground mt-4"
+            className="flex justify-center items-center gap-2 text-sm text-muted-foreground mt-4"
           >
             <span>Swipe to explore</span>
             <ChevronRight className="w-5 h-5 animate-pulse" />
           </motion.div>
         </motion.div>
 
-        {/* Posts */}
+        {/* Posts - Horizontal Scroll for ALL devices */}
         {posts.length === 0 ? (
           <motion.div
             initial={{ opacity: 0 }}
@@ -159,9 +147,9 @@ export default function LatestPostsClient({ posts }: LatestPostsClientProps) {
           </motion.div>
         ) : (
           <>
-            {/* Mobile: Horizontal Scroll */}
-            <div className="md:hidden">
-              <div className="flex gap-4 overflow-x-auto pb-8 snap-x snap-mandatory scrollbar-hide -mx-4 px-4">
+            {/* Horizontal Scroll Container - Mobile & Desktop */}
+            <div className="relative">
+              <div className="flex gap-4 md:gap-6 overflow-x-auto pb-8 snap-x snap-mandatory scrollbar-hide -mx-4 px-4 md:-mx-8 md:px-8">
                 {posts.map((post, index) => (
                   <motion.article
                     key={post.slug}
@@ -169,7 +157,7 @@ export default function LatestPostsClient({ posts }: LatestPostsClientProps) {
                     whileInView={{ opacity: 1, x: 0 }}
                     viewport={{ once: true, margin: "-50px" }}
                     transition={{ duration: 0.5, delay: index * 0.1 }}
-                    className="flex-shrink-0 w-[85vw] sm:w-96 snap-start"
+                    className="flex-shrink-0 w-[85vw] sm:w-[420px] md:w-[460px] lg:w-[480px] snap-start"
                   >
                     <BlogPostCard post={post} />
                   </motion.article>
@@ -186,25 +174,6 @@ export default function LatestPostsClient({ posts }: LatestPostsClientProps) {
                 ))}
               </div>
             </div>
-
-            {/* Desktop: Grid */}
-            <motion.div
-              initial="hidden"
-              whileInView="visible"
-              viewport={{ once: true, margin: "-100px" }}
-              className="hidden md:grid md:grid-cols-2 lg:grid-cols-3 gap-6 md:gap-8"
-            >
-              {posts.map((post, index) => (
-                <motion.article
-                  key={post.slug}
-                  variants={cardVariants}
-                  custom={index}
-                  transition={{ delay: index * 0.1 }}
-                >
-                  <BlogPostCard post={post} />
-                </motion.article>
-              ))}
-            </motion.div>
           </>
         )}
 
@@ -250,10 +219,21 @@ function BlogPostCard({ post }: { post: BlogPost }) {
   return (
     <Link href={`/blog/${post.slug}`} className="block group h-full">
       <motion.div
-        whileHover={{ y: -8 }}
+        whileHover={{ y: -8, scale: 1.02 }}
         transition={{ duration: 0.3 }}
-        className="h-full rounded-2xl border border-border bg-card hover:border-primary/50 transition-all duration-300 hover:shadow-xl hover:shadow-primary/5 relative overflow-hidden"
+        className="h-full rounded-2xl border border-border bg-gradient-to-br from-card via-card to-primary/5 hover:border-primary/50 transition-all duration-500 hover:shadow-2xl hover:shadow-primary/10 relative overflow-hidden"
       >
+        {/* Animated gradient overlay */}
+        <motion.div
+          className="absolute inset-0 bg-gradient-to-br from-primary/0 via-primary/5 to-primary/10 opacity-0 group-hover:opacity-100 transition-opacity duration-500"
+          initial={false}
+        />
+
+        {/* Shine effect on hover */}
+        <motion.div
+          className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000"
+        />
+
         {/* Image */}
         {post.frontmatter.image && (
           <div className="relative w-full h-48 sm:h-56 overflow-hidden bg-muted">
@@ -261,7 +241,7 @@ function BlogPostCard({ post }: { post: BlogPost }) {
               src={post.frontmatter.image}
               alt={post.frontmatter.title}
               fill
-              sizes="(max-width: 768px) 85vw, (max-width: 1200px) 50vw, 33vw"
+              sizes="(max-width: 768px) 85vw, 500px"
               className="object-cover transition-transform duration-500 group-hover:scale-110"
               priority={post.frontmatter.featured}
             />
@@ -279,11 +259,8 @@ function BlogPostCard({ post }: { post: BlogPost }) {
           </div>
         )}
 
-        {/* Hover gradient effect */}
-        <div className="absolute inset-0 bg-gradient-to-br from-primary/0 via-primary/0 to-primary/5 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
-
         {/* Content */}
-        <div className="relative p-6 space-y-3">
+        <div className="relative p-6 space-y-4">
           {/* Tags */}
           {post.frontmatter.tags && post.frontmatter.tags.length > 0 && (
             <div className="flex flex-wrap gap-2">
@@ -337,9 +314,12 @@ function BlogPostCard({ post }: { post: BlogPost }) {
           </div>
         </div>
 
+        {/* Corner decoration */}
+        <div className="absolute top-0 right-0 w-24 h-24 bg-gradient-to-bl from-primary/10 to-transparent rounded-bl-full opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+
         {/* Featured badge (jika tidak ada image) */}
         {!post.frontmatter.image && post.frontmatter.featured && (
-          <div className="absolute top-4 right-4">
+          <div className="absolute top-4 right-4 z-10">
             <Badge className="bg-primary text-primary-foreground shadow-lg">
               <Sparkles className="w-3 h-3 mr-1" />
               Featured
