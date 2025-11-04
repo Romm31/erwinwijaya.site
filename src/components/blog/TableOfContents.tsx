@@ -1,43 +1,24 @@
 "use client"
 
-import { useState, useEffect } from "react"
+// [UBAH] Hapus 'useState' dan 'useEffect', karena kita akan dapat 'activeSection' dari props
 import { motion } from "framer-motion"
 import type { TocItem } from "@/lib/blog"
 
+// [UBAH] Tambahkan 'activeSection: string' di sini
 interface TableOfContentsProps {
   items: TocItem[]
+  activeSection: string
 }
 
-export default function TableOfContents({ items }: TableOfContentsProps) {
-  const [activeId, setActiveId] = useState<string>("")
-
-  useEffect(() => {
-    // 🧩 Pastikan kode DOM hanya jalan di browser, bukan saat build
-    if (typeof window === "undefined") return
-
-    const headings = document.querySelectorAll("h2[id], h3[id]")
-    if (!headings.length) return
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            setActiveId(entry.target.id)
-          }
-        })
-      },
-      { rootMargin: "-20% 0px -35% 0px" }
-    )
-
-    headings.forEach((heading) => observer.observe(heading))
-
-    return () => {
-      headings.forEach((heading) => observer.unobserve(heading))
-    }
-  }, [])
+// [UBAH] Terima 'activeSection' dari props
+export default function TableOfContents({ items, activeSection }: TableOfContentsProps) {
+  // [UBAH] Hapus semua logic 'useState' dan 'useEffect' di bawah ini
+  // const [activeId, setActiveId] = useState<string>("")
+  // useEffect(() => { ... }, [])
 
   if (items.length === 0) return null
 
+  // Tampilan <motion.nav> dan <h2> tetap dipertahankan sesuai permintaan
   return (
     <motion.nav
       initial={{ opacity: 0, x: -20 }}
@@ -50,7 +31,8 @@ export default function TableOfContents({ items }: TableOfContentsProps) {
       </h2>
       <ul className="space-y-2 text-sm">
         {items.map((item) => {
-          const isActive = activeId === item.id
+          // [UBAH] Ganti 'activeId' dengan 'activeSection' yang dari props
+          const isActive = activeSection === item.id
           const isH3 = item.level === 3
 
           return (
